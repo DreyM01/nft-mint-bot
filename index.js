@@ -1,14 +1,22 @@
 import { Telegraf } from "telegraf";
-import { JsonRpcProvider } from "ethers";
+import { JsonRpcProvider, Wallet } from "ethers";
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+
 const provider = new JsonRpcProvider(process.env.ETH_RPC_URL);
+
+const wallet = new Wallet(
+  process.env.WALLET_PRIVATE_KEY,
+  provider
+);
 
 bot.start((ctx) => {
   ctx.reply(
     "🤖 NFT Mint Bot is online!\n\n" +
     "/status - Check bot status\n" +
-    "/block - Get latest Ethereum block"
+    "/block - Get latest Ethereum block\n" +
+    "/wallet - Show test wallet address\n" +
+    "/balance - Show test wallet balance"
   );
 });
 
@@ -35,6 +43,28 @@ bot.command("block", async (ctx) => {
   } catch (error) {
     console.error(error);
     ctx.reply("❌ Could not retrieve the latest block.");
+  }
+});
+
+bot.command("wallet", async (ctx) => {
+  try {
+    ctx.reply(`👛 Test wallet:\n${wallet.address}`);
+  } catch (error) {
+    console.error(error);
+    ctx.reply("❌ Could not read wallet.");
+  }
+});
+
+bot.command("balance", async (ctx) => {
+  try {
+    const balance = await provider.getBalance(wallet.address);
+
+    const eth = Number(balance) / 1e18;
+
+    ctx.reply(`💰 Sepolia ETH balance:\n${eth.toFixed(6)} ETH`);
+  } catch (error) {
+    console.error(error);
+    ctx.reply("❌ Could not retrieve wallet balance.");
   }
 });
 
