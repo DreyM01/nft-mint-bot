@@ -67,7 +67,51 @@ bot.command("balance", async (ctx) => {
     ctx.reply("❌ Could not retrieve wallet balance.");
   }
 });
+bot.command("testtx", async (ctx) => {
+  try {
+    const balance = await provider.getBalance(wallet.address);
 
+    const gasPrice = await provider.getFeeData();
+    const gasLimit = 21000n;
+    const value = 1000000000000n; // 0.000001 ETH
+
+    const fee = gasPrice.maxFeePerGas
+      ? gasPrice.maxFeePerGas * gasLimit
+      : gasPrice.gasPrice * gasLimit;
+
+    if (balance < value + fee) {
+      return ctx.reply("❌ Insufficient Sepolia ETH for the test transaction.");
+    }
+
+    ctx.reply("⏳ Sending test transaction...");
+
+    const tx = await wallet.sendTransaction({
+      to: wallet.address,
+      value,
+      gasLimit
+    });
+
+    ctx.reply(
+      `📤 Transaction submitted!\n\n` +
+      `Hash:\n${tx.hash}`
+    );
+
+    const receipt = await tx.wait();
+
+    if (receipt.status === 1) {
+      ctx.reply(
+        `✅ Transaction confirmed!\n\n` +
+        `Block: ${receipt.blockNumber}\n` +
+        `Hash:\n${tx.hash}`
+      );
+    } else {
+      ctx.reply("❌ Transaction reverted.");
+    }
+  } catch (error) {
+    console.error(error);
+    ctx.reply("❌ Transaction failed. Check Railway logs.");
+  }
+});
 bot.catch((error) => {
   console.error("Telegram error:", error);
 });
