@@ -1,6 +1,7 @@
 import { Telegraf } from "telegraf";
 import {
   JsonRpcProvider,
+  WebSocketProvider,
   Wallet,
   Contract,
   formatEther,
@@ -35,6 +36,10 @@ const rhProvider = new JsonRpcProvider(
   process.env.RH_RPC_URL
 );
 
+const rhWsProvider = new WebSocketProvider(
+  process.env.RH_WS_URL
+);
+
 const rhWallet = new Wallet(
   process.env.RH_PRIVATE_KEY,
   rhProvider
@@ -51,7 +56,7 @@ const SEADROP_CONTRACT =
   "0x00005EA00Ac477B1030CE78506496e8C2dE24bf5";
 
 // =====================================================
-// ABIs
+// ABIS
 // =====================================================
 
 const nftAbi = [
@@ -100,11 +105,19 @@ async function adminOnly(ctx, next) {
 }
 
 // =====================================================
-// PUBLIC ID COMMAND
+// STATE
+// =====================================================
+
+let mintInProgress = false;
+let autoMintArmed = false;
+let autoMintExecuted = false;
+
+// =====================================================
+// TELEGRAM ID
 // =====================================================
 
 bot.command("myid", async (ctx) => {
-  ctx.reply(
+  await ctx.reply(
     `Your Telegram ID is:\n${ctx.from.id}`
   );
 });
@@ -114,13 +127,14 @@ bot.command("myid", async (ctx) => {
 // =====================================================
 
 bot.start(async (ctx) => {
+
   if (!isAdmin(ctx)) {
     return ctx.reply(
       "🤖 NFT Mint Bot is online."
     );
   }
 
-  ctx.reply(
+  await ctx.reply(
     "🤖 NFT Mint Bot is online!\n\n" +
 
     "🦊 Robinhood Chain\n" +
@@ -130,8 +144,9 @@ bot.start(async (ctx) => {
 
     "🎨 Rare Friends Genesis\n" +
     "/mintinfo - Check public mint\n" +
-    "/mintstats - Check wallet mint stats\n" +
-    "/mint - Simulate then mint 1 NFT\n\n" +
+    "/mintstats - Check wallet stats\n" +
+    "/mint - Manual mint\n" +
+    "/autostatus - Auto-mint status\n\n" +
 
     "🧪 Sepolia\n" +
     "/status - Check Sepolia\n" +
@@ -142,20 +157,25 @@ bot.start(async (ctx) => {
 });
 
 // =====================================================
-// SEPOLIA COMMANDS
+// SEPOLIA
 // =====================================================
 
 bot.command("status", adminOnly, async (ctx) => {
   try {
-    const network = await sepoliaProvider.getNetwork();
 
-    ctx.reply(
+    const network =
+      await sepoliaProvider.getNetwork();
+
+    await ctx.reply(
       `🟢 Sepolia connected\n` +
       `Chain ID: ${network.chainId}`
     );
+
   } catch (error) {
+
     console.error(error);
-    ctx.reply(
+
+    await ctx.reply(
       "🔴 Sepolia RPC connection failed."
     );
   }
@@ -163,136 +183,193 @@ bot.command("status", adminOnly, async (ctx) => {
 
 bot.command("block", adminOnly, async (ctx) => {
   try {
+
     const block =
       await sepoliaProvider.getBlockNumber();
 
-    ctx.reply(
+    await ctx.reply(
       `⛓️ Latest Sepolia block: ${block}`
     );
+
   } catch (error) {
+
     console.error(error);
-    ctx.reply(
+
+    await ctx.reply(
       "❌ Could not retrieve Sepolia block."
     );
   }
 });
 
 bot.command("wallet", adminOnly, async (ctx) => {
-  ctx.reply(
+
+  await ctx.reply(
     `👛 Sepolia wallet:\n${sepoliaWallet.address}`
   );
+
 });
 
 bot.command("balance", adminOnly, async (ctx) => {
+
   try {
+
     const balance =
       await sepoliaProvider.getBalance(
         sepoliaWallet.address
       );
 
-    ctx.reply(
+    await ctx.reply(
       `💰 Sepolia balance:\n${formatEther(balance)} ETH`
     );
+
   } catch (error) {
+
     console.error(error);
-    ctx.reply(
+
+    await ctx.reply(
       "❌ Could not retrieve Sepolia balance."
     );
   }
+
 });
 
 // =====================================================
-// ROBINHOOD COMMANDS
+// ROBINHOOD STATUS
 // =====================================================
 
 bot.command("rhstatus", adminOnly, async (ctx) => {
+
   try {
+
     const network =
       await rhProvider.getNetwork();
 
     const block =
       await rhProvider.getBlockNumber();
 
-    ctx.reply(
+    await ctx.reply(
       `🟢 Robinhood Chain connected\n\n` +
       `Chain ID: ${network.chainId}\n` +
       `Latest block: ${block}`
     );
+
   } catch (error) {
+
     console.error(error);
-    ctx.reply(
+
+    await ctx.reply(
       "🔴 Robinhood Chain RPC connection failed."
     );
   }
+
 });
+
+// =====================================================
+// ROBINHOOD WALLET
+// =====================================================
 
 bot.command("rhwallet", adminOnly, async (ctx) => {
-  ctx.reply(
+
+  await ctx.reply(
     `👛 Robinhood mint wallet:\n${rhWallet.address}`
   );
+
 });
 
+// =====================================================
+// ROBINHOOD BALANCE
+// =====================================================
+
 bot.command("rhbalance", adminOnly, async (ctx) => {
+
   try {
+
     const balance =
       await rhProvider.getBalance(
         rhWallet.address
       );
 
-    ctx.reply(
+    await ctx.reply(
       `💰 Robinhood Chain ETH balance:\n${formatEther(balance)} ETH`
     );
+
   } catch (error) {
+
     console.error(error);
-    ctx.reply(
+
+    await ctx.reply(
       "❌ Could not retrieve Robinhood balance."
     );
   }
+
 });
 
 // =====================================================
-// MINT INFORMATION
+// MINT INFO
 // =====================================================
 
+async function getMintData() {
+
+  const drop =
+    await seadrop.getPublicDrop(
+      NFT_CONTRACT
+    );
+
+  const now =
+    Math.floor(Date.now() / 1000);
+
+  const start =
+    Number(drop.startTime);
+
+  const end =
+    Number(drop.endTime);
+
+  let status;
+
+  if (now < start) {
+
+    status = "⏳ NOT STARTED";
+
+  } else if (now > end) {
+
+    status = "🔴 ENDED";
+
+  } else {
+
+    status = "🟢 ACTIVE";
+
+  }
+
+  return {
+    drop,
+    now,
+    start,
+    end,
+    status
+  };
+}
+
 bot.command("mintinfo", adminOnly, async (ctx) => {
+
   try {
-    const drop =
-      await seadrop.getPublicDrop(
-        NFT_CONTRACT
-      );
 
-    const now =
-      Math.floor(Date.now() / 1000);
-
-    const start =
-      Number(drop.startTime);
-
-    const end =
-      Number(drop.endTime);
-
-    const mintPrice =
-      drop.mintPrice;
-
-    let status;
-
-    if (now < start) {
-      status = "⏳ NOT STARTED";
-    } else if (now > end) {
-      status = "🔴 ENDED";
-    } else {
-      status = "🟢 ACTIVE";
-    }
+    const {
+      drop,
+      start,
+      end,
+      status
+    } = await getMintData();
 
     const recipients =
       await seadrop.getAllowedFeeRecipients(
         NFT_CONTRACT
       );
 
-    ctx.reply(
+    await ctx.reply(
       `🎨 Rare Friends Genesis\n\n` +
 
       `Status: ${status}\n` +
-      `Mint price: ${formatEther(mintPrice)} ETH\n` +
+      `Mint price: ${formatEther(drop.mintPrice)} ETH\n` +
       `Max per wallet: ${drop.maxTotalMintableByWallet}\n` +
       `Fee BPS: ${drop.feeBps}\n` +
       `Restricted recipients: ${drop.restrictFeeRecipients}\n\n` +
@@ -304,25 +381,30 @@ bot.command("mintinfo", adminOnly, async (ctx) => {
     );
 
   } catch (error) {
+
     console.error(error);
-    ctx.reply(
+
+    await ctx.reply(
       "❌ Could not read Rare Friends mint information."
     );
   }
+
 });
 
 // =====================================================
-// WALLET MINT STATS
+// MINT STATS
 // =====================================================
 
 bot.command("mintstats", adminOnly, async (ctx) => {
+
   try {
+
     const stats =
       await nft.getMintStats(
         rhWallet.address
       );
 
-    ctx.reply(
+    await ctx.reply(
       `📊 Rare Friends wallet stats\n\n` +
       `Already minted: ${stats.minterNumMinted}\n` +
       `Current supply: ${stats.currentTotalSupply}\n` +
@@ -330,78 +412,117 @@ bot.command("mintstats", adminOnly, async (ctx) => {
     );
 
   } catch (error) {
+
     console.error(error);
-    ctx.reply(
+
+    await ctx.reply(
       "❌ Could not retrieve mint stats."
     );
   }
+
 });
 
 // =====================================================
-// MINT
+// DYNAMIC GAS
 // =====================================================
 
-let mintInProgress = false;
+async function getDynamicGas() {
 
-bot.command("mint", adminOnly, async (ctx) => {
+  const feeData =
+    await rhProvider.getFeeData();
+
+  const overrides = {};
+
+  if (
+    feeData.maxFeePerGas !== null &&
+    feeData.maxPriorityFeePerGas !== null
+  ) {
+
+    overrides.maxFeePerGas =
+      feeData.maxFeePerGas;
+
+    overrides.maxPriorityFeePerGas =
+      feeData.maxPriorityFeePerGas;
+
+  } else if (
+    feeData.gasPrice !== null
+  ) {
+
+    overrides.gasPrice =
+      feeData.gasPrice;
+  }
+
+  return overrides;
+}
+
+// =====================================================
+// EXECUTE MINT
+// =====================================================
+
+async function executeMint(source = "automatic") {
 
   if (mintInProgress) {
-    return ctx.reply(
-      "⏳ A mint transaction is already being processed."
+
+    console.log(
+      "Mint already in progress."
     );
+
+    return;
+  }
+
+  if (autoMintExecuted) {
+
+    console.log(
+      "Automatic mint already executed."
+    );
+
+    return;
   }
 
   mintInProgress = true;
 
   try {
 
-    await ctx.reply(
-      "🔎 Checking Rare Friends public mint..."
+    console.log(
+      `🚀 Mint execution started (${source})`
     );
 
-    // -----------------------------------------------
-    // 1. Read public drop
-    // -----------------------------------------------
+    // -------------------------------------------------
+    // READ PUBLIC DROP
+    // -------------------------------------------------
 
-    const drop =
-      await seadrop.getPublicDrop(
-        NFT_CONTRACT
-      );
+    const {
+      drop,
+      now,
+      start,
+      end
+    } = await getMintData();
 
-    const now =
-      Math.floor(Date.now() / 1000);
-
-    const start =
-      Number(drop.startTime);
-
-    const end =
-      Number(drop.endTime);
-
-    // -----------------------------------------------
-    // 2. Check mint window
-    // -----------------------------------------------
+    // -------------------------------------------------
+    // VERIFY WINDOW
+    // -------------------------------------------------
 
     if (now < start) {
 
-      const seconds =
-        start - now;
-
-      return ctx.reply(
-        `⏳ Public mint has not started yet.\n\n` +
-        `Starts in approximately ${seconds} seconds.`
+      console.log(
+        `Mint has not started. ${start - now}s remaining.`
       );
+
+      return;
     }
 
     if (now > end) {
 
-      return ctx.reply(
-        "🔴 The public mint has ended."
+      console.log(
+        "Mint has already ended."
       );
+
+      return;
     }
 
-    // -----------------------------------------------
-    // 3. Check wallet mint stats
-    // -----------------------------------------------
+    // -------------------------------------------------
+    // VERIFY WALLET LIMIT
+    // -------------------------------------------------
 
     const stats =
       await nft.getMintStats(
@@ -418,16 +539,23 @@ bot.command("mint", adminOnly, async (ctx) => {
       alreadyMinted + 1 >
       maxPerWallet
     ) {
-      return ctx.reply(
-        `⛔ Wallet has already reached its mint limit.\n\n` +
+
+      console.log(
+        "Wallet mint limit reached."
+      );
+
+      await safeTelegram(
+        `⛔ Wallet has already reached the mint limit.\n\n` +
         `Already minted: ${alreadyMinted}\n` +
         `Maximum: ${maxPerWallet}`
       );
+
+      return;
     }
 
-    // -----------------------------------------------
-    // 4. Get allowed fee recipient
-    // -----------------------------------------------
+    // -------------------------------------------------
+    // FEE RECIPIENT
+    // -------------------------------------------------
 
     const recipients =
       await seadrop.getAllowedFeeRecipients(
@@ -435,39 +563,40 @@ bot.command("mint", adminOnly, async (ctx) => {
       );
 
     if (!recipients.length) {
-      return ctx.reply(
-        "❌ No allowed SeaDrop fee recipient was found."
+
+      throw new Error(
+        "No allowed SeaDrop fee recipient."
       );
     }
 
     const feeRecipient =
       recipients[0];
 
-    // -----------------------------------------------
-    // 5. Check balance
-    // -----------------------------------------------
+    // -------------------------------------------------
+    // QUANTITY
+    // -------------------------------------------------
+
+    const quantity = 1;
+
+    const value =
+      drop.mintPrice *
+      BigInt(quantity);
+
+    // -------------------------------------------------
+    // BALANCE
+    // -------------------------------------------------
 
     const balance =
       await rhProvider.getBalance(
         rhWallet.address
       );
 
-    // -----------------------------------------------
-    // 6. Mint price
-    // -----------------------------------------------
+    // -------------------------------------------------
+    // GAS
+    // -------------------------------------------------
 
-    const mintPrice =
-      drop.mintPrice;
-
-    // One NFT only.
-    const quantity = 1;
-
-    const value =
-      mintPrice * BigInt(quantity);
-
-    // -----------------------------------------------
-    // 7. Estimate gas
-    // -----------------------------------------------
+    const gasOverrides =
+      await getDynamicGas();
 
     const gasEstimate =
       await seadrop.mintPublic.estimateGas(
@@ -476,52 +605,70 @@ bot.command("mint", adminOnly, async (ctx) => {
         ZeroAddress,
         quantity,
         {
-          value
+          value,
+          ...gasOverrides
         }
       );
 
-    // -----------------------------------------------
-    // 8. Check gas affordability
-    // -----------------------------------------------
+    // Add a modest safety margin to gas limit.
+    const gasLimit =
+      (gasEstimate * 120n) / 100n;
 
-    const feeData =
-      await rhProvider.getFeeData();
+    // -------------------------------------------------
+    // COST CHECK
+    // -------------------------------------------------
 
-    const gasPrice =
-      feeData.maxFeePerGas ??
-      feeData.gasPrice;
+    let gasPriceForCheck;
 
-    if (!gasPrice) {
-      return ctx.reply(
-        "❌ Could not determine current gas price."
+    if (
+      gasOverrides.maxFeePerGas
+    ) {
+
+      gasPriceForCheck =
+        gasOverrides.maxFeePerGas;
+
+    } else {
+
+      gasPriceForCheck =
+        gasOverrides.gasPrice;
+    }
+
+    if (!gasPriceForCheck) {
+
+      throw new Error(
+        "Could not determine gas price."
       );
     }
 
     const estimatedGasCost =
-      gasEstimate * gasPrice;
+      gasLimit *
+      gasPriceForCheck;
 
     const totalRequired =
-      value + estimatedGasCost;
+      value +
+      estimatedGasCost;
 
-    if (balance < totalRequired) {
-      return ctx.reply(
-        `❌ Insufficient ETH for the transaction.\n\n` +
+    if (
+      balance <
+      totalRequired
+    ) {
+
+      await safeTelegram(
+        `❌ Insufficient ETH.\n\n` +
         `Balance: ${formatEther(balance)} ETH\n` +
-        `Estimated required: ${formatEther(totalRequired)} ETH`
+        `Estimated maximum: ${formatEther(totalRequired)} ETH`
       );
+
+      return;
     }
 
-    await ctx.reply(
-      `🟢 Public mint is ACTIVE.\n\n` +
-      `Price: ${formatEther(mintPrice)} ETH\n` +
-      `Quantity: 1\n` +
-      `Fee recipient: ${feeRecipient}\n\n` +
-      `🧪 Simulating transaction...`
-    );
+    // -------------------------------------------------
+    // SIMULATION
+    // -------------------------------------------------
 
-    // -----------------------------------------------
-    // 9. SIMULATE BEFORE SENDING
-    // -----------------------------------------------
+    console.log(
+      "🧪 Simulating mint..."
+    );
 
     await seadrop.mintPublic.staticCall(
       NFT_CONTRACT,
@@ -529,18 +676,27 @@ bot.command("mint", adminOnly, async (ctx) => {
       ZeroAddress,
       quantity,
       {
-        value
+        value,
+        ...gasOverrides
       }
     );
 
-    await ctx.reply(
-      "✅ Simulation passed.\n\n" +
-      "🚀 Sending mint transaction..."
+    console.log(
+      "✅ Simulation passed."
     );
 
-    // -----------------------------------------------
-    // 10. SEND TRANSACTION
-    // -----------------------------------------------
+    // -------------------------------------------------
+    // SEND TRANSACTION
+    // -------------------------------------------------
+
+    await safeTelegram(
+      `🚀 Rare Friends public mint is active.\n\n` +
+      `Automatic execution triggered.\n` +
+      `Quantity: 1\n` +
+      `Price: ${formatEther(value)} ETH\n` +
+      `⛽ Dynamic network fee selected.\n\n` +
+      `📡 Sending transaction...`
+    );
 
     const tx =
       await seadrop.mintPublic(
@@ -549,24 +705,32 @@ bot.command("mint", adminOnly, async (ctx) => {
         ZeroAddress,
         quantity,
         {
-          value
+          value,
+          gasLimit,
+          ...gasOverrides
         }
       );
 
-    await ctx.reply(
+    autoMintExecuted = true;
+
+    console.log(
+      `📡 Transaction submitted: ${tx.hash}`
+    );
+
+    await safeTelegram(
       `📡 Transaction submitted!\n\n` +
       `Hash:\n${tx.hash}\n\n` +
       `⏳ Waiting for confirmation...`
     );
 
-    // -----------------------------------------------
-    // 11. WAIT FOR CONFIRMATION
-    // -----------------------------------------------
-
     const receipt =
       await tx.wait();
 
-    await ctx.reply(
+    console.log(
+      `🎉 Mint confirmed in block ${receipt.blockNumber}`
+    );
+
+    await safeTelegram(
       `🎉 MINT CONFIRMED!\n\n` +
       `Rare Friends Genesis: 1 NFT\n` +
       `Block: ${receipt.blockNumber}\n\n` +
@@ -584,30 +748,336 @@ bot.command("mint", adminOnly, async (ctx) => {
       "❌ Mint failed.";
 
     if (error?.shortMessage) {
+
       message +=
         `\n\n${error.shortMessage}`;
+
     } else if (error?.reason) {
+
       message +=
         `\n\n${error.reason}`;
+
+    } else if (error?.message) {
+
+      message +=
+        `\n\n${error.message.slice(0, 500)}`;
     }
 
-    await ctx.reply(message);
+    await safeTelegram(message);
 
   } finally {
 
     mintInProgress = false;
   }
+}
+
+// =====================================================
+// TELEGRAM SAFE SEND
+// =====================================================
+
+async function safeTelegram(message) {
+
+  if (!ADMIN_ID) {
+
+    console.log(
+      "Telegram admin ID is not configured."
+    );
+
+    return;
+  }
+
+  try {
+
+    await bot.telegram.sendMessage(
+      ADMIN_ID,
+      message
+    );
+
+  } catch (error) {
+
+    console.error(
+      "Telegram notification failed:",
+      error
+    );
+  }
+}
+
+// =====================================================
+// MANUAL MINT
+// =====================================================
+
+bot.command("mint", adminOnly, async (ctx) => {
+
+  await ctx.reply(
+    "🔎 Checking Rare Friends public mint..."
+  );
+
+  await executeMint("manual");
 });
+
+// =====================================================
+// AUTO STATUS
+// =====================================================
+
+bot.command("autostatus", adminOnly, async (ctx) => {
+
+  await ctx.reply(
+    `🤖 Automatic mint system\n\n` +
+
+    `Armed: ${autoMintArmed ? "YES 🟢" : "NO 🔴"}\n` +
+    `Executed: ${autoMintExecuted ? "YES ✅" : "NO"}\n` +
+    `Mint in progress: ${mintInProgress ? "YES" : "NO"}`
+  );
+
+});
+
+// =====================================================
+// AUTOMATIC MINT SCHEDULER
+// =====================================================
+
+async function armAutomaticMint() {
+
+  if (autoMintArmed) {
+    return;
+  }
+
+  autoMintArmed = true;
+
+  try {
+
+    const {
+      start,
+      end
+    } = await getMintData();
+
+    const now =
+      Math.floor(Date.now() / 1000);
+
+    console.log(
+      `🎯 Public mint start: ${start}`
+    );
+
+    console.log(
+      `🎯 Public mint end: ${end}`
+    );
+
+    // -------------------------------------------------
+    // ALREADY ENDED
+    // -------------------------------------------------
+
+    if (now > end) {
+
+      console.log(
+        "🔴 Public mint already ended."
+      );
+
+      return;
+    }
+
+    // -------------------------------------------------
+    // ALREADY ACTIVE
+    // -------------------------------------------------
+
+    if (
+      now >= start &&
+      now <= end
+    ) {
+
+      console.log(
+        "🟢 Public mint already active."
+      );
+
+      await executeMint("startup");
+
+      return;
+    }
+
+    // -------------------------------------------------
+    // WAIT UNTIL CLOSE TO START
+    // -------------------------------------------------
+
+    const secondsUntilStart =
+      start - now;
+
+    console.log(
+      `⏳ Automatic execution armed. ` +
+      `${secondsUntilStart}s until start.`
+    );
+
+    setTimeout(
+      () => beginStartMonitoring(start, end),
+      Math.max(
+        0,
+        (secondsUntilStart - 5) * 1000
+      )
+    );
+
+  } catch (error) {
+
+    console.error(
+      "Auto-mint setup error:",
+      error
+    );
+  }
+}
+
+// =====================================================
+// START MONITORING
+// =====================================================
+
+function beginStartMonitoring(
+  start,
+  end
+) {
+
+  console.log(
+    "👀 Beginning public mint monitoring..."
+  );
+
+  let checking = false;
+
+  const check = async () => {
+
+    if (
+      autoMintExecuted ||
+      mintInProgress
+    ) {
+      return;
+    }
+
+    if (checking) {
+      return;
+    }
+
+    checking = true;
+
+    try {
+
+      const {
+        now
+      } = await getMintData();
+
+      if (
+        now >= start &&
+        now <= end
+      ) {
+
+        console.log(
+          "🟢 PUBLIC MINT ACTIVE!"
+        );
+
+        clearInterval(
+          fallbackInterval
+        );
+
+        await executeMint(
+          "automatic"
+        );
+
+        return;
+      }
+
+      if (now > end) {
+
+        console.log(
+          "🔴 Public mint ended."
+        );
+
+        clearInterval(
+          fallbackInterval
+        );
+      }
+
+    } catch (error) {
+
+      console.error(
+        "Start monitor error:",
+        error
+      );
+
+    } finally {
+
+      checking = false;
+    }
+  };
+
+  const fallbackInterval =
+    setInterval(
+      check,
+      500
+    );
+
+  check();
+
+  // ---------------------------------------------------
+  // WEBSOCKET BLOCK MONITOR
+  // ---------------------------------------------------
+
+  rhWsProvider.on(
+    "block",
+    async (blockNumber) => {
+
+      if (
+        autoMintExecuted ||
+        mintInProgress
+      ) {
+        return;
+      }
+
+      try {
+
+        const block =
+          await rhWsProvider.getBlock(
+            blockNumber
+          );
+
+        if (!block) {
+          return;
+        }
+
+        const blockTime =
+          Number(block.timestamp);
+
+        if (
+          blockTime >= start &&
+          blockTime <= end
+        ) {
+
+          console.log(
+            `⚡ Eligible block detected: ${blockNumber}`
+          );
+
+          clearInterval(
+            fallbackInterval
+          );
+
+          await executeMint(
+            "websocket"
+          );
+        }
+
+      } catch (error) {
+
+        console.error(
+          "WebSocket block error:",
+          error
+        );
+      }
+    }
+  );
+}
 
 // =====================================================
 // TELEGRAM ERRORS
 // =====================================================
 
 bot.catch((error) => {
+
   console.error(
     "Telegram error:",
     error
   );
+
 });
 
 // =====================================================
@@ -620,12 +1090,26 @@ console.log(
   "🤖 NFT Mint Bot started"
 );
 
+// Start automatic mint monitoring.
+
+armAutomaticMint();
+
 process.once(
   "SIGINT",
-  () => bot.stop("SIGINT")
+  () => {
+
+    rhWsProvider.destroy();
+
+    bot.stop("SIGINT");
+  }
 );
 
 process.once(
   "SIGTERM",
-  () => bot.stop("SIGTERM")
+  () => {
+
+    rhWsProvider.destroy();
+
+    bot.stop("SIGTERM");
+  }
 );
